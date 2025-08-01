@@ -179,6 +179,7 @@ type Resource[T any] struct {
 	queryOperatorByField      map[string]FieldQueryOperation
 	queryParamByAlias         map[string]string
 	columnByField             map[string]string
+	disallowedQueryFields     map[string]struct{}
 	fieldByJSON               map[string]string
 	ignoredFieldsByPermission map[access.Permission]map[string]*FieldIgnoreRule
 
@@ -1207,6 +1208,10 @@ func (r *Resource[T]) generateListEndpoint(routes router.Router, groupPath strin
 				field = paramToLookup
 			}
 
+			if _, disallowed := r.disallowedQueryFields[strings.ToLower(field)]; disallowed {
+				continue
+			}
+
 			if !r.isFieldNameValid(field) {
 				continue
 			}
@@ -1710,5 +1715,12 @@ func (r *Resource[T]) sendResponse(ctx router.Context, resource *T, permission a
 		ctx.WriteJSON(http.StatusOK, customResponse)
 	} else {
 		ctx.WriteJSON(http.StatusOK, resource)
+	}
+}
+
+func (r *Resource[T]) SetDisallowedQueryFields(fields ...string) {
+	r.disallowedQueryFields = make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		r.disallowedQueryFields[strings.ToLower(f)] = struct{}{}
 	}
 }
