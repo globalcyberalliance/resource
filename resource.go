@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -174,6 +175,8 @@ type Resource[T any] struct {
 	preload      []string
 	schema       *openapi.Schema
 
+	allowBulkCreate bool
+
 	// Fields.
 	fields                    []*Field
 	queryOperatorByField      map[string]FieldQueryOperation
@@ -189,6 +192,7 @@ type Resource[T any] struct {
 	beforeDelete            []func(ctx context.Context, obj *T) error
 	afterDelete             []func(ctx context.Context, obj *T) error
 	beforeResponse          map[access.Permission]func(ctx context.Context, obj *T) (any, error)
+	beforeBulkResponse      map[access.Permission]func(ctx context.Context, obj []*T) (any, error)
 	beforeResponseType      map[access.Permission]any
 	beforeListResponse      func(ctx context.Context, obj []*T) (any, error)
 	beforeListResponseType  any
@@ -965,23 +969,48 @@ func (r *Resource[T]) generateCreateEndpoint(routes router.Router, groupPath str
 			Path:        routePath,
 			Tags:        r.tags,
 			Deprecated:  pathOptions.DeprecateDocs,
-		}).Summary("Creates a new " + r.name).
-			Description("Creates a new " + r.name + ". If the resource already exists, this returns an error.")
+		})
+
+		if r.allowBulkCreate {
+			createDoc.Summary("Creates one or more " + r.pluralName).
+				Description("Creates one or more " + r.pluralName + ". Accepts either a single object or an array of objects. If any resource already exists, this returns an error.")
+		} else {
+			createDoc.Summary("Creates a new " + r.name).
+				Description("Creates a new " + r.name + ". If the resource already exists, this returns an error.")
+		}
 
 		var resourceTypeForDoc *T
 
 		if customRequestType, ok := r.beforeRequestType[access.PermissionCreate]; ok {
-			createDoc.Request().Body(valueOfType(customRequestType))
+			if r.allowBulkCreate {
+				// For bulk operations, show that both single object and array are accepted
+				createDoc.Request().Body(valueOfType(customRequestType)).Description("Single " + r.name + " object")
+				// Note: OpenAPI doesn't have a clean way to show "either X or [X]" so we document the single case
+				// and mention array support in the description
+			} else {
+				createDoc.Request().Body(valueOfType(customRequestType))
+			}
 		} else {
-			createDoc.Request().Body(resourceTypeForDoc)
+			if r.allowBulkCreate {
+				createDoc.Request().Body(resourceTypeForDoc).Description("Single " + r.name + " object or array of " + r.name + " objects")
+			} else {
+				createDoc.Request().Body(resourceTypeForDoc)
+			}
 		}
 
 		if _, ok := r.beforeResponse[access.PermissionCreate]; ok {
-			createDoc.Response(http.StatusOK).Body(r.beforeResponseType[access.PermissionCreate])
+			if r.allowBulkCreate {
+				createDoc.Response(http.StatusOK).Body(r.beforeResponseType[access.PermissionCreate])
+			} else {
+				createDoc.Response(http.StatusOK).Body(r.beforeResponseType[access.PermissionCreate])
+			}
 		} else {
-			createDoc.Response(http.StatusOK).Body(resourceTypeForDoc)
+			if r.allowBulkCreate {
+				createDoc.Response(http.StatusOK).Body([]*T{})
+			} else {
+				createDoc.Response(http.StatusOK).Body(resourceTypeForDoc)
+			}
 		}
-
 	}
 
 	if r.post != nil {
@@ -994,19 +1023,34 @@ func (r *Resource[T]) generateCreateEndpoint(routes router.Router, groupPath str
 			ForbiddenAccess(ctx)
 			return
 		}
-
-		resource, err := r.parseAndValidateRequestBody(ctx, access.PermissionCreate)
-		if err != nil {
-			return
-		}
-
-		if err := r.Create(ctx, resource); err != nil {
-			r.sendError(ctx, err)
-			return
-		}
-
-		r.sendResponse(ctx, resource, access.PermissionCreate)
 	})
+
+	routes.POST(routePath, func(ctx router.Context) {
+		if r.rbac != nil && !r.rbac.HasPermission(ctx, permissionName, access.PermissionCreate) {
+			ForbiddenAccess(ctx)
+			return
+		}
+
+		if r.allowBulkCreate {
+			r.handleBulkOrSingleCreate(ctx)
+		} else {
+			r.handleSingleCreate(ctx)
+		}
+	})
+}
+
+func (r *Resource[T]) handleSingleCreate(ctx router.Context) {
+	resource, err := r.parseAndValidateRequestBody(ctx, access.PermissionCreate)
+	if err != nil {
+		return
+	}
+
+	if err := r.Create(ctx, resource); err != nil {
+		r.sendError(ctx, err)
+		return
+	}
+
+	r.sendResponse(ctx, resource, access.PermissionCreate)
 }
 
 // Delete deletes a resource by id
@@ -1629,7 +1673,7 @@ func (r *Resource[T]) parseAndValidateRequestBody(ctx router.Context, accessMeth
 			return nil, errors.New("invalid input")
 		}
 
-		var customRequest = reflect.New(customRequestType).Interface()
+		customRequest := reflect.New(customRequestType).Interface()
 		if err = json.Unmarshal(body, &customRequest); err != nil {
 			InternalServerError(ctx, err)
 			return nil, err
@@ -1823,8 +1867,284 @@ func (r *Resource[T]) sendResponse(ctx router.Context, resource *T, permission a
 }
 
 func (r *Resource[T]) SetDisallowedQueryFields(fields ...string) {
+	println("ARRRGRRR")
 	r.disallowedQueryFields = make(map[string]struct{}, len(fields))
 	for _, f := range fields {
 		r.disallowedQueryFields[strings.ToLower(f)] = struct{}{}
 	}
+}
+
+// Add this method to enable bulk create operations
+func (r *Resource[T]) EnableBulkCreate() {
+	r.allowBulkCreate = true
+}
+
+// Helper method to handle both bulk and single resource creation
+func (r *Resource[T]) handleBulkOrSingleCreate(ctx router.Context) {
+	defer ctx.Request().Body.Close()
+	lr := io.LimitReader(ctx.Request().Body, r.maxInputBytes)
+	body, err := io.ReadAll(lr)
+	if err != nil {
+		InternalServerError(ctx, err)
+		return
+	}
+
+	// Try to determine if the request body is an array or single object
+	var rawData json.RawMessage
+	if err := json.Unmarshal(body, &rawData); err != nil {
+		InternalServerError(ctx, err)
+		return
+	}
+
+	// Check if it's an array by looking at the first character
+	trimmed := bytes.TrimSpace(rawData)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		// Handle bulk creation
+		r.handleBulkCreateFromBody(ctx, body)
+	} else {
+		// Handle single creation
+		r.handleSingleCreateFromBody(ctx, body)
+	}
+}
+
+// Helper method to handle single creation from request body (extracted from existing logic)
+func (r *Resource[T]) handleSingleCreateFromBody(ctx router.Context, body []byte) {
+	// Handle custom request types
+	if f, ok := r.beforeRequest[access.PermissionCreate]; ok {
+		customRequestType, ok := r.beforeRequestType[access.PermissionCreate]
+		if !ok {
+			InternalServerError(ctx, errors.New("custom request type could not be found"))
+			return
+		}
+		customRequestTypeSchema, ok := r.beforeRequestTypeSchema[access.PermissionCreate]
+		if !ok {
+			InternalServerError(ctx, errors.New("custom request type schema could not be found"))
+			return
+		}
+
+		var customRequestTypeForValidation map[string]any
+		if err := json.Unmarshal(body, &customRequestTypeForValidation); err != nil {
+			InternalServerError(ctx, err)
+			return
+		}
+
+		errs := r.IsValid(customRequestTypeForValidation, customRequestTypeSchema)
+		if len(errs) > 0 {
+			var errStrings []string
+			for _, err := range errs {
+				errStrings = append(errStrings, err.Error())
+			}
+			InvalidInput(ctx, strings.Join(errStrings, ", \n"))
+			return
+		}
+
+		customRequest := reflect.New(customRequestType).Interface()
+		if err := json.Unmarshal(body, &customRequest); err != nil {
+			InternalServerError(ctx, err)
+			return
+		}
+
+		resourceFromCustomRequest, err := f(ctx, customRequest)
+		if err != nil {
+			r.sendError(ctx, err)
+			return
+		}
+
+		body, err = json.Marshal(resourceFromCustomRequest)
+		if err != nil {
+			InternalServerError(ctx, err)
+			return
+		}
+	}
+
+	// Validate as single T
+	var resourceForValidation map[string]any
+	if err := json.Unmarshal(body, &resourceForValidation); err != nil {
+		InternalServerError(ctx, err)
+		return
+	}
+
+	errs := r.IsValid(resourceForValidation, r.schema)
+	if len(errs) > 0 {
+		var errStrings []string
+		for _, err := range errs {
+			errStrings = append(errStrings, err.Error())
+		}
+		InvalidInput(ctx, strings.Join(errStrings, ", \n"))
+		return
+	}
+
+	var resource *T
+	if err := json.Unmarshal(body, &resource); err != nil {
+		InternalServerError(ctx, err)
+		return
+	}
+
+	if err := r.Create(ctx, resource); err != nil {
+		r.sendError(ctx, err)
+		return
+	}
+
+	r.sendResponse(ctx, resource, access.PermissionCreate)
+}
+
+// Helper method to handle bulk creation from request body
+func (r *Resource[T]) handleBulkCreateFromBody(ctx router.Context, body []byte) {
+	// Handle custom request types for bulk operations
+	if f, ok := r.beforeRequest[access.PermissionCreate]; ok {
+		customRequestType, ok := r.beforeRequestType[access.PermissionCreate]
+		if !ok {
+			InternalServerError(ctx, errors.New("custom request type could not be found"))
+			return
+		}
+		customRequestTypeSchema, ok := r.beforeRequestTypeSchema[access.PermissionCreate]
+		if !ok {
+			InternalServerError(ctx, errors.New("custom request type schema could not be found"))
+			return
+		}
+
+		var customRequestsForValidation []map[string]any
+		if err := json.Unmarshal(body, &customRequestsForValidation); err != nil {
+			InternalServerError(ctx, err)
+			return
+		}
+
+		// Validate each object in the array
+		for i, customRequestForValidation := range customRequestsForValidation {
+			errs := r.IsValid(customRequestForValidation, customRequestTypeSchema)
+			if len(errs) > 0 {
+				var errStrings []string
+				for _, err := range errs {
+					errStrings = append(errStrings, fmt.Sprintf("Item %d: %s", i, err.Error()))
+				}
+				InvalidInput(ctx, strings.Join(errStrings, ", \n"))
+				return
+			}
+		}
+
+		// Unmarshal to custom request type array
+		ptrType := reflect.New(customRequestType).Type()
+		sliceType := reflect.SliceOf(ptrType)
+		customRequestsSlice := reflect.MakeSlice(sliceType, 0, 0)
+		customRequestsPtr := reflect.New(sliceType)
+		customRequestsPtr.Elem().Set(customRequestsSlice)
+
+		if err := json.Unmarshal(body, customRequestsPtr.Interface()); err != nil {
+			InternalServerError(ctx, err)
+			return
+		}
+
+		// Convert each custom request to resource T
+		var resources []*T
+		customRequestsValue := customRequestsPtr.Elem()
+		for i := 0; i < customRequestsValue.Len(); i++ {
+			customRequest := customRequestsValue.Index(i).Interface()
+			resource, err := f(ctx, customRequest)
+			if err != nil {
+				r.sendError(ctx, err)
+				return
+			}
+			resources = append(resources, resource)
+		}
+
+		// Re-marshal to validate as T array
+		resourcesBody, err := json.Marshal(resources)
+		if err != nil {
+			InternalServerError(ctx, err)
+			return
+		}
+		body = resourcesBody
+	}
+
+	// Validate as array of T
+	var resourcesForValidation []map[string]any
+	if err := json.Unmarshal(body, &resourcesForValidation); err != nil {
+		InternalServerError(ctx, err)
+		return
+	}
+
+	for i, resourceForValidation := range resourcesForValidation {
+		errs := r.IsValid(resourceForValidation, r.schema)
+		if len(errs) > 0 {
+			var errStrings []string
+			for _, err := range errs {
+				errStrings = append(errStrings, fmt.Sprintf("Item %d: %s", i, err.Error()))
+			}
+			InvalidInput(ctx, strings.Join(errStrings, ", \n"))
+			return
+		}
+	}
+
+	var resources []*T
+	if err := json.Unmarshal(body, &resources); err != nil {
+		InternalServerError(ctx, err)
+		return
+	}
+
+	if len(resources) == 0 {
+		InvalidInput(ctx, "Array cannot be empty")
+		return
+	}
+
+	if err := r.CreateBulk(ctx, resources); err != nil {
+		r.sendError(ctx, err)
+		return
+	}
+
+	if f, ok := r.beforeBulkResponse[access.PermissionCreate]; ok {
+		customResponse, err := f(ctx, resources)
+		if err != nil {
+			var userError *UserError
+			if errors.As(err, &userError) {
+				CustomUserError(ctx, userError)
+				return
+			}
+
+			InternalServerError(ctx, err)
+			return
+		}
+		ctx.WriteJSON(http.StatusOK, customResponse)
+	} else {
+		ctx.WriteJSON(http.StatusOK, resources)
+	}
+}
+
+func (r *Resource[T]) CreateBulk(ctx context.Context, resources []*T) error {
+	if len(resources) == 0 {
+		return errors.New("no resources provided for bulk create")
+	}
+
+	// Run before save hooks for each resource
+	for _, resource := range resources {
+		if err := r.runBeforeSaveHooks(ctx, resource, access.PermissionCreate); err != nil {
+			return err
+		}
+	}
+
+	tx := r.tx(ctx)
+	table := tx.Model((*T)(nil))
+	r.omitIgnoredFields(ctx, access.PermissionCreate, table)
+
+	// Use GORM's CreateInBatches for better performance with large datasets
+	if result := table.CreateInBatches(&resources, 100); result.Error != nil {
+		return result.Error
+	}
+
+	// Grant ACL permissions for each created resource
+	if r.acl != nil {
+		for _, resource := range resources {
+			if err := r.acl.GrantPermissions(ctx, r.name, r.getID(resource), r.aclGrantPermissions); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Run after save hooks for each resource
+	for _, resource := range resources {
+		if err := r.runAfterSaveHooks(ctx, resource, access.PermissionCreate); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
