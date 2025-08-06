@@ -1023,13 +1023,6 @@ func (r *Resource[T]) generateCreateEndpoint(routes router.Router, groupPath str
 			ForbiddenAccess(ctx)
 			return
 		}
-	})
-
-	routes.POST(routePath, func(ctx router.Context) {
-		if r.rbac != nil && !r.rbac.HasPermission(ctx, permissionName, access.PermissionCreate) {
-			ForbiddenAccess(ctx)
-			return
-		}
 
 		if r.allowBulkCreate {
 			r.handleBulkOrSingleCreate(ctx)
@@ -2122,7 +2115,7 @@ func (r *Resource[T]) CreateBulk(ctx context.Context, resources []*T) error {
 	}
 
 	tx := r.tx(ctx)
-	table := tx.Model((*T)(nil))
+	table := tx.Model(resources[0])
 	r.omitIgnoredFields(ctx, access.PermissionCreate, table)
 
 	// Use GORM's CreateInBatches for better performance with large datasets
