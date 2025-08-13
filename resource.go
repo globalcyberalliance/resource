@@ -688,6 +688,12 @@ func parseFieldFromParam(db *gorm.DB, param string, resource any, field string) 
 		parsedValue = parsedIntValue
 	case reflect.String:
 		parsedValue = param
+	case reflect.Bool:
+		parsedBoolValue, err := strconv.ParseBool(param)
+		if err != nil {
+			return "", nil, errors.Wrapf(err, "failed to parseFieldFromParam, not a boolean")
+		}
+		parsedValue = parsedBoolValue
 	case reflect.Struct:
 		// If it's time.Time, parse the string into a time.Time.
 		if gormField.StructField.Type == reflect.TypeOf(time.Time{}) {
