@@ -175,7 +175,8 @@ type Resource[T any] struct {
 	preload      []string
 	schema       *openapi.Schema
 
-	allowBulkCreate bool
+	allowBulkCreate    bool
+	maxBulkPayloadSize uint32
 
 	// Fields.
 	fields                    []*Field
@@ -1874,8 +1875,9 @@ func (r *Resource[T]) SetDisallowedQueryFields(fields ...string) {
 }
 
 // Add this method to enable bulk create operations
-func (r *Resource[T]) EnableBulkCreate() {
+func (r *Resource[T]) EnableBulkCreate(maxPayloadSize uint32) {
 	r.allowBulkCreate = true
+	r.maxBulkPayloadSize = maxPayloadSize
 }
 
 // Helper method to handle both bulk and single resource creation
@@ -2008,6 +2010,11 @@ func (r *Resource[T]) handleBulkCreateFromBody(ctx router.Context, body []byte) 
 			return
 		}
 
+		if len(customRequestsForValidation) > int(r.maxBulkPayloadSize) {
+			InvalidInput(ctx, fmt.Sprintf("Request payload exceeds maximum size: %d", r.maxBulkPayloadSize))
+			return
+		}
+
 		// Validate each object in the array
 		for i, customRequestForValidation := range customRequestsForValidation {
 			errs := r.IsValid(customRequestForValidation, customRequestTypeSchema)
@@ -2124,9 +2131,8 @@ func (r *Resource[T]) CreateBulk(ctx context.Context, resources []*T) error {
 	table := tx.Model(resources[0])
 	r.omitIgnoredFields(ctx, access.PermissionCreate, table)
 
-	// Use GORM's CreateInBatches for better performance with large datasets
-	if result := table.CreateInBatches(&resources, 100); result.Error != nil {
-		return result.Error
+	if result := table.Create(&resources); result.Error != nil {
+		return fmt.Errorf("failed to bulk create resources: %w", result.Error)
 	}
 
 	// Grant ACL permissions for each created resource
