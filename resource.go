@@ -229,6 +229,9 @@ type Resource[T any] struct {
 	// Other.
 	maxInputBytes int64
 	txContextKey  string
+
+	// Primary field example override.
+	primaryFieldExample string
 }
 
 // NewResource creates a new resource. Name is expected to be singular and we attempt to make it plural for doc
@@ -338,6 +341,11 @@ func (r *Resource[T]) Tags(tags []string) {
 // PrimaryField returns the name of the primary field. The primary field is what is used for REST endpoints such as /users/:id (in this case, id, is the primary field).
 func (r *Resource[T]) PrimaryField() string {
 	return r.primaryField
+}
+
+// SetPrimaryFieldExample sets an example for the primary field, otherwise this will default to "1".
+func (r *Resource[T]) SetPrimaryFieldExample(example string) {
+	r.primaryFieldExample = example
 }
 
 // EnableRBAC enables Role Based Access Control for a resource. You are expected to implement the access.RBAC interface (see pkg/access/examples). This provides broad access control
@@ -1385,7 +1393,11 @@ func (r *Resource[T]) generateReadEndpoint(routes router.Router, groupPath strin
 			Summary("Returns a single " + r.name).
 			Description("Returns a single " + r.name + " by the primary ID.")
 
-		getDoc.Request().PathParam(r.PrimaryFieldURLParam(), r.name).Description("Primary ID of the " + r.name).Example("1").Required(true)
+		example := "1"
+		if r.primaryFieldExample != "" {
+			example = r.primaryFieldExample
+		}
+		getDoc.Request().PathParam(r.PrimaryFieldURLParam(), r.name).Description("Primary ID of the " + r.name).Example(example).Required(true)
 
 		if _, ok := r.beforeResponse[access.PermissionRead]; ok {
 			getDoc.Response(http.StatusOK).Body(r.beforeResponseType[access.PermissionRead])
