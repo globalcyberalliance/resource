@@ -967,13 +967,13 @@ func (r *Resource[T]) Create(ctx context.Context, resource *T) error {
 
 func (r *Resource[T]) generateCreateEndpoint(routes router.Router, groupPath string, permissionName string, openAPI *openapi.Builder) {
 	pathOptions := r.pathOptions[access.PermissionCreate]
-	routePath := path.Join(routes.BasePath(), groupPath, pathOptions.Path)
+	routePath := path.Join(groupPath, pathOptions.Path)
 
 	if !pathOptions.DisableDocs {
 		createDoc := openAPI.Register(&openapi.Operation{
 			OperationID: "create" + r.name,
 			Method:      http.MethodPost,
-			Path:        routePath,
+			Path:        path.Join(routes.BasePath(), routePath),
 			Tags:        r.tags,
 			Deprecated:  pathOptions.DeprecateDocs,
 		})
@@ -1091,14 +1091,14 @@ func (r *Resource[T]) Delete(ctx context.Context, primaryId any) error {
 
 func (r *Resource[T]) generateDeleteEndpoint(routes router.Router, groupPath string, permissionName string, openAPI *openapi.Builder) {
 	pathOptions := r.pathOptions[access.PermissionDelete]
-	routePath := path.Join(routes.BasePath(), groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
+	routePath := path.Join(groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
 	var resourceTypeForDoc *T
 
 	if !pathOptions.DisableDocs {
 		deleteDoc := openAPI.Register(&openapi.Operation{
 			OperationID: "delete" + r.name,
 			Method:      http.MethodDelete,
-			Path:        routePath,
+			Path:        path.Join(routes.BasePath(), routePath),
 			Tags:        r.tags,
 			Deprecated:  pathOptions.DeprecateDocs,
 		}).
@@ -1167,14 +1167,14 @@ func (r *Resource[T]) generateDeleteEndpoint(routes router.Router, groupPath str
 
 func (r *Resource[T]) generateListEndpoint(routes router.Router, groupPath string, permissionName string, openAPI *openapi.Builder) {
 	pathOptions := r.pathOptions[access.PermissionList]
-	routePath := path.Join(routes.BasePath(), groupPath, pathOptions.Path)
+	routePath := path.Join(groupPath, pathOptions.Path)
 	var resourceTypeForDoc *T
 
 	if !pathOptions.DisableDocs {
 		listDoc := openAPI.Register(&openapi.Operation{
 			OperationID: "list" + r.name,
 			Method:      http.MethodGet,
-			Path:        routePath,
+			Path:        path.Join(routes.BasePath(), routePath),
 			Tags:        r.tags,
 			Deprecated:  pathOptions.DeprecateDocs,
 		}).Summary("Gets a list of " + r.pluralName).
@@ -1371,14 +1371,14 @@ func (r *Resource[T]) Get(ctx context.Context, primaryId any) (*T, error) {
 
 func (r *Resource[T]) generateReadEndpoint(routes router.Router, groupPath string, permissionName string, openAPI *openapi.Builder) {
 	pathOptions := r.pathOptions[access.PermissionRead]
-	routePath := path.Join(routes.BasePath(), groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
+	routePath := path.Join(groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
 	var resourceTypeForDoc *T
 
 	if !pathOptions.DisableDocs {
 		getDoc := openAPI.Register(&openapi.Operation{
 			OperationID: "get" + r.name,
 			Method:      http.MethodGet,
-			Path:        routePath,
+			Path:        path.Join(routes.BasePath(), routePath),
 			Tags:        r.tags,
 			Deprecated:  pathOptions.DeprecateDocs,
 		}).
@@ -1471,14 +1471,14 @@ func (r *Resource[T]) Update(ctx context.Context, primaryId any, resource *T) er
 
 func (r *Resource[T]) generateUpdateEndpoint(routes router.Router, groupPath string, permissionName string, openAPI *openapi.Builder) {
 	pathOptions := r.pathOptions[access.PermissionUpdate]
-	routePath := path.Join(routes.BasePath(), groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
+	routePath := path.Join(groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
 	var resourceTypeForDoc *T
 
 	if !pathOptions.DisableDocs {
 		updateDoc := openAPI.Register(&openapi.Operation{
 			OperationID: "update" + r.name,
 			Method:      http.MethodPut,
-			Path:        routePath,
+			Path:        path.Join(routes.BasePath(), routePath),
 			Tags:        r.tags,
 			Deprecated:  pathOptions.DeprecateDocs,
 		}).Summary("Updates a single " + r.name).
@@ -1556,14 +1556,14 @@ func (r *Resource[T]) Patch(ctx context.Context, primaryId any, resource *T) err
 
 func (r *Resource[T]) generateUpdatePatchEndpoint(routes router.Router, groupPath string, permissionName string, openAPI *openapi.Builder) {
 	pathOptions := r.pathOptions[access.PermissionUpdate]
-	routePath := path.Join(routes.BasePath(), groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
+	routePath := path.Join(groupPath, pathOptions.Path, "{"+r.PrimaryFieldURLParam()+"}")
 	var resourceTypeForDoc *T
 
 	if !pathOptions.DisableDocs {
 		patchDoc := openAPI.Register(&openapi.Operation{
 			OperationID: "patch" + r.name,
 			Method:      http.MethodPatch,
-			Path:        routePath,
+			Path:        path.Join(routes.BasePath(), routePath),
 			Tags:        r.tags,
 			Deprecated:  pathOptions.DeprecateDocs,
 		}).Summary("Patches a single " + r.name).
